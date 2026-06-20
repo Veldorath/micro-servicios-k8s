@@ -60,11 +60,43 @@ jobs:
           done
           kubectl apply -f orders-service-lb.yaml
 
-      - name: 8. Esperar al rollout y mostrar el resultado
+      - name: 8. Esperar al rollout y mostrar el resultado (con diagnostico)
         run: |
-          kubectl rollout status deployment/products-service --timeout=180s
-          kubectl rollout status deployment/inventory-service --timeout=180s
-          kubectl rollout status deployment/orders-service --timeout=180s
+          set +e   # no abortar al primer fallo; queremos recolectar diagnostico
+          FALLO=0
+          for dep in products-service inventory-service orders-service; do
+            echo "::group::Rollout de $dep"
+            if ! kubectl rollout status "deployment/$dep" --timeout=180s; then
+              echo "ERROR: el rollout de $dep no termino. Recolectando diagnostico..."
+              echo "----- describe deployment $dep -----"
+              kubectl describe "deployment/$dep"
+              echo "----- replicasets ($dep) -----"
+              kubectl get rs -l "app=$dep" -o wide
+              echo "----- pods ($dep) -----"
+              kubectl get pods -l "app=$dep" -o wide
+              for pod in $(kubectl get pods -l "app=$dep" -o jsonpath='{.items[*].metadata.name}'); do
+                echo "===== describe pod $pod ====="
+                kubectl describe "pod/$pod"
+                echo "===== logs $pod (actual) ====="
+                kubectl logs "$pod" --all-containers --tail=200
+                echo "===== logs $pod (previo, si reinicio) ====="
+                kubectl logs "$pod" --all-containers --previous --tail=200 || true
+              done
+              FALLO=1
+            fi
+            echo "::endgroup::"
+          done
+
+          echo "::group::Estado final del cluster"
           kubectl get pods -o wide
+          echo "----- eventos recientes -----"
+          kubectl get events --sort-by='.lastTimestamp' | tail -n 60
+          echo "::endgroup::"
+
+          if [ "$FALLO" -ne 0 ]; then
+            echo "Al menos un rollout fallo. Revisa el diagnostico de arriba."
+            exit 1
+          fi
+
           echo "URL publica del LoadBalancer (tarda 2-3 min en responder):"
           kubectl get svc orders-service-lb -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'; echo
