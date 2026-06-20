@@ -19,10 +19,14 @@ cambia, solo cambia la configuración.
   - En Kubernetes/EKS:   http://products-service:8001  (mismo nombre, DNS interno)
 """
 import os
+import time
 
 import httpx
+import psutil
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
+INICIO = time.time()   # momento en que arranco el proceso (para el uptime)
 
 app = FastAPI(
     title="Orders Service",
@@ -46,6 +50,26 @@ class OrderRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "orders-service"}
+
+
+@app.get("/live")
+def live():
+    """
+    Liveness: el proceso esta vivo y respondiendo. NO depende de nadie externo.
+    Devolvemos OK y desde hace cuantos segundos esta arriba (uptime).
+    """
+    return {"alive": True, "uptime_segundos": round(time.time() - INICIO, 1)}
+
+
+@app.get("/ready")
+def ready():
+    """Readiness: listo solo si NO esta saturado de memoria (uso real con psutil)."""
+    umbral = float(os.getenv("READY_MAX_MEM_PERCENT", "90"))
+    cpu_usada = psutil.cpu_percent(interval=0.1)
+    memoria_usada = psutil.virtual_memory().percent
+    if memoria_usada > umbral:
+        raise HTTPException(status_code=503, detail={"ready": False, "memoria_%": memoria_usada})
+    return {"ready": True, "memoria_%": memoria_usada, "service": "orders-service"}
 
 
 @app.get("/config")
